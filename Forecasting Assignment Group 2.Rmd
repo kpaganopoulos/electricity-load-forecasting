@@ -89,6 +89,7 @@ Let's now run a multiregression in order to see how much of the variation of dem
 
 The model we are building is the following:
 $$log10(demand)= \beta_0 + \beta_1*avg.temp + \beta_2*avg.temp^2 + \beta_3*Workday + ε_t$$
+
 ```{r}
 data_new_1<-data_new[1:(n-3),]
 data_new_ts = ts(data_new_1)
