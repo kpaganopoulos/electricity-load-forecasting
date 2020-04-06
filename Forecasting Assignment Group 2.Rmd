@@ -1,0 +1,427 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
+
+#Energy Analytics
+##Forecasting assignment
+##Electricity demand forecasting
+###Group 2
+
+First we import the relevant libraries:
+
+```{r}
+library(readxl)
+library(forecast)
+library(dplyr)
+library(tidyverse)
+library(lubridate)
+library(padr)
+library(tm)
+library(rlist)
+library(ggplot2)
+library(SciViews)
+```
+
+Let us now import the data:
+
+```{r}
+data_orig <- read_xlsx("load_weather_dataset.xlsx")
+data_orig <- rename(data_orig,demand = 'Load Values England and Wales (MW)')
+data_orig <- rename(data_orig,mean_temp = 'HadCET mean')
+```
+
+Let's just plot demand over time to see the big picture:
+
+```{r}
+ggplot(data_orig) + geom_line(aes(x = `Date`, y = demand), color = 'deepskyblue4', alpha = 0.75) + 
+  labs(x = "Time", y = "Power demand in MW", title = "Power demand vs Time - Time series data") + 
+  theme_minimal()
+ggsave("figure1.png", dpi=500, dev='png', height=4, width=5, units="in")
+```
+
+Let's make a scatterplot with temperature and demand to see any patterns.
+First let's look at the correlations of the different temperatures with demand:
+
+```{r}
+cor_mean = cor(na.omit(data_orig$mean_temp),na.omit(data_orig$demand))
+cor_min = cor(na.omit(data_orig$`HadCET min`),na.omit(data_orig$demand))
+cor_max = cor(na.omit(data_orig$`HadCET max`),na.omit(data_orig$demand))
+```
+
+For temperature we use the average temperature of the day which we guess that it is more representative.
+
+```{r}
+ggplot(data_orig) + geom_point(aes(x = mean_temp, y = demand), color = 'deepskyblue4', alpha = 0.2) + 
+  geom_smooth(mapping = aes(x = mean_temp, y =demand), color = 'royalblue4') + 
+  labs(x = "Mean day Temperature", y = "Power demand in MW", title = "Power demand vs Temperature") + 
+  theme_minimal()
+ggsave("figure4.png", dpi=500, dev='png', height=4, width=5, units="in")
+```
+
+Now we should also create a column in the dataset that says if a day is a Working day or not. We also add a column with the square of the max temperature and a new column with the log of demand (which will be the dependent variable). Note that we omitted the last two rows that have na variables for the temperature values.
+
+```{r}
+library(timeDate)
+data_new <- mutate(data_orig,Weekday = as.numeric(isWeekday(data_orig$Date)))
+data_new <- mutate(data_new,mean_temp_sqr = mean_temp**2)
+data_new <- mutate(data_new,log_demand = log(demand))
+n<-dim(data_new)[1]
+```
+
+We also create a descriptive figure that shows the effect of weekends on the demand of power:
+
+```{r}
+ggplot(data_new, aes(x = Weekday, y = demand)) + geom_boxplot(outlier.shape = NA) + geom_jitter(color = 'deepskyblue4', alpha=0.3) + theme_minimal() + scale_x_discrete(limits = c("TRUE", "FALSE")) + labs(x = "Weekday", y = "Power Demand in MW") + ggtitle("Power Demand on Weekday and Weekend")
+ggsave("figure3.png", dpi=500, dev='png', height=4, width=5, units="in")
+```
+
+##Part 1: Explaining the whole process for model_a
+
+Now we include the temperature forecast for the days that we are supposed to give a forecast.
+
+```{r}
+mean_temp_workday_forecast <- data.frame(cbind(mean_temp=c(round((4+5+4)/3,digits=1),round((10+9.5+7.5)/3,digits=1)),mean_temp_sqr= c(round(((4+5+4)/3)**2,digits=1),round(((10+9.5+7.5)/3)**2,digits=1)),Weekday=c(1,1)))
+```
+
+Let's now run a multiregression in order to see how much of the variation of demand is explained by max_temperature and weekday.
+
+The model we are building is the following:
+$$log10(demand)= \beta_0 + \beta_1*avg.temp + \beta_2*avg.temp^2 + \beta_3*Workday + ε_t$$
+```{r}
+data_new_1<-data_new[1:(n-3),]
+data_new_ts = ts(data_new_1)
+demand_m1<- tslm(log_demand ~ mean_temp + mean_temp_sqr + Weekday, data = data_new_ts)
+summary(demand_m1)
+```
+
+When forecasting one step ahead, the standard deviation of the forecast distribution is almost the same as the standard deviation of the residuals (In fact, the two standard deviations are identical if there are no parameters to be estimated, as is the case with the naïve method. For forecasting methods involving parameters to be estimated, the standard deviation of the forecast distribution is slightly larger than the residual standard deviation, although this difference is often ignored).
+[Forecasting: Principles and Practice, Hydman, Athanasopoulos, chapter 3.5]
+
+The model we have obtained is :
+$$log10(demand)= 4.517 + -1.574e-02*avg.temp + 2.919e-04 *avg.temp^2 + 5.738e-02*Workday$$
+
+For the 27th of February, we have Weekday = 1, mean_temp = 4.3 and mean_temp_sqr = 18.8.
+Let's calculate the forecast mean and the forecast sd from the model summary:
+
+```{r}
+forecast_mean_1 <- 4.517 + -1.574e-02*4.3 + 2.919e-04 *4.3^2 +5.738e-02*1
+forecast_sd_1 <- 0.02973
+```
+
+Let's use the function forecast to see if we take the same forecast mean and a forecast standard deviation as follows:
+
+```{r}
+fcast <- forecast(demand_m1,newdata = mean_temp_workday_forecast)
+forecast_mean_2 <- fcast[["mean"]]
+forecast_sd_2 <- (fcast$upper[,1] - fcast$lower[,1]) / (2 * qnorm(.5 + fcast$level[1] / 200))
+```
+
+We get exactly the same value for the forecast mean and a slight different value for the forecast_sd (this is justified from the above explanation from Hydman_Athanosopoulos)
+
+As a result, we will be using the function forecast of time-series objects for the next models.
+
+# Model 1
+
+Let's now score the model:
+
+```{r}
+data_train_score <- filter(data_new, Date < as.Date('2020/01/01'), Date >= as.Date('2017/01/01'))
+data_test_score <- filter(data_new, Date == as.Date('2020/01/01'))
+n1<-dim(data_new)[1]
+n2 <- dim(data_train_score)[1]
+num_dates <- as.numeric(as.Date('2020/03/15')-as.Date('2020/01/01'))
+score_model_a2 <- c()
+for (i in 1:num_dates){
+  data_train_score <- filter(data_new, Date < as.Date('2020/01/01')+i, Date >= as.Date('2017/01/01')+i)
+  data_test_score <- filter(data_new, Date == as.Date('2020/01/01')+i)
+  data_new_ts = ts(data_train_score)
+  demand_m1<- tslm(log_demand ~ mean_temp + Weekday, data = data_new_ts)
+  mean_temp_workday_forecast <- select(data_test_score,mean_temp,mean_temp_sqr,Weekday)
+  fcast <- forecast(demand_m1,newdata = mean_temp_workday_forecast)
+  forecast_mean <- fcast[["mean"]]
+  forecast_std <- summary(demand_m12)[["sigma"]]
+  actual_observation = data_test_score$log_demand
+  log_score = ln(1/sqrt(2*pi))-ln(forecast_std)-(1/2)*((actual_observation-forecast_mean)/forecast_std)**2
+  point_score = abs(actual_observation-forecast_mean)**2
+  score_model_a2 <- c(score_model_a2,log_score)
+}
+final_score_model_a2 <- mean(score_model_a2)
+```
+
+## Model 2:
+
+We want to make a forecast for the demand for the dates between 01/01/2020 and 26/02/2020, as these are the dates we know the actual demand.
+
+```{r}
+data_train_score <- filter(data_new, Date < as.Date('2020/01/01'), Date >= as.Date('2017/01/01'))
+data_test_score <- filter(data_new, Date == as.Date('2020/01/01'))
+n1<-dim(data_new)[1]
+n2 <- dim(data_train_score)[1]
+num_dates <- as.numeric(as.Date('2020/03/15')-as.Date('2020/01/01'))
+score_model_a <- c()
+for (i in 1:num_dates){
+  data_train_score <- filter(data_new, Date < as.Date('2020/01/01')+i, Date >= as.Date('2017/01/01')+i)
+  data_test_score <- filter(data_new, Date == as.Date('2020/01/01')+i)
+  data_new_ts = ts(data_train_score)
+  demand_m2<- tslm(log_demand ~ mean_temp + mean_temp_sqr + Weekday, data = data_new_ts)
+  mean_temp_workday_forecast <- select(data_test_score,mean_temp,mean_temp_sqr,Weekday)
+  fcast <- forecast(demand_m2,newdata = mean_temp_workday_forecast)
+  forecast_mean <- fcast[["mean"]]
+  forecast_std <- summary(demand_m1)[["sigma"]]
+  actual_observation = data_test_score$log_demand
+  log_score = ln(1/sqrt(2*pi))-ln(forecast_std)-(1/2)*((actual_observation-forecast_mean)/forecast_std)**2
+  point_score = abs(actual_observation-forecast_mean)**2
+  score_model_a <- c(score_model_a,log_score)
+}
+final_score_model_a <- mean(score_model_a)
+```
+
+##Part 2: Building and testing the other models
+
+First we build the model regarding: $$log10(demandt)= \beta_0 + \beta_1*avg.temp + \beta_2*avg.temp^2 + \beta_3*Workday + \beta_4*log10(demandt-1) + ε_t$$
+
+## Model 3
+
+We need to add to our data a column with the demand lagged by one day.
+
+```{r}
+data_new <- mutate(data_new,lagged_demand_t_1 = lag(log_demand))
+```
+
+Let's build the model and score it.
+
+```{r}
+data_train_score <- filter(data_new, Date < as.Date('2020/01/01'), Date >= as.Date('2017/01/01')+1)
+data_test_score <- filter(data_new, Date == as.Date('2020/01/01'))
+n1<-dim(data_new)[1]-1
+n2 <- dim(data_train_score)[1]
+num_dates <- as.numeric(as.Date('2020/03/15')-as.Date('2020/01/01'))
+score_model_b <- c()
+for (i in 1:(num_dates)){
+  data_train_score <- filter(data_new, Date < as.Date('2020/01/01')+i, Date >= as.Date('2017/01/01')+i+1)
+  data_test_score <- filter(data_new, Date == as.Date('2020/01/01')+i)
+  data_new_ts = ts(data_train_score)
+  demand_m3<- tslm(log_demand ~ mean_temp + mean_temp_sqr + Weekday +lagged_demand_t_1, data = data_new_ts)
+  mean_temp_workday_forecast <- select(data_test_score,mean_temp,mean_temp_sqr,Weekday,lagged_demand_t_1)
+  fcast <- forecast(demand_m3,newdata = mean_temp_workday_forecast)
+  forecast_mean <- fcast[["mean"]]
+  forecast_std <- summary(demand_m2)[["sigma"]]
+  actual_observation = data_test_score$log_demand
+  log_score = ln(1/sqrt(2*pi))-ln(forecast_std)-(1/2)*((actual_observation-forecast_mean)/forecast_std)**2
+  point_score = abs(actual_observation-forecast_mean)**2
+  score_model_b <- c(score_model_b,log_score)
+}
+final_score_model_b <- mean(score_model_b)
+```
+
+Then we build the model regarding: $$log10(demandt)= \beta_0 + \beta_1*avg.temp + \beta_2*avg.temp^2 + \beta_3*Workday + \beta_4*log10(demandt-1) + \beta_5*log10(demandt-2) ε_t$$
+
+## Model 4:
+
+We need to add to our data a column with the demand lagged by one day.
+
+```{r}
+data_new <- mutate(data_new,lagged_demand_t_2 = lag(lagged_demand_t_1))
+```
+
+Let's build the model and score it.
+
+```{r}
+data_train_score <- filter(data_new, Date < as.Date('2020/01/01'), Date >= as.Date('2017/01/01')+2)
+data_test_score <- filter(data_new, Date == as.Date('2020/01/01'))
+n1<-dim(data_new)[1]-1
+n2 <- dim(data_train_score)[1]
+num_dates <- as.numeric(as.Date('2020/03/15')-as.Date('2020/01/01'))
+i=0
+score_model_c <- c()
+for (i in 1:(num_dates)){
+  data_train_score <- filter(data_new, Date < as.Date('2020/01/01')+i, Date >= as.Date('2017/01/01')+i+1)
+  data_test_score <- filter(data_new, Date == as.Date('2020/01/01')+i)
+  data_new_ts = ts(data_train_score)
+  demand_m4<- tslm(log_demand ~ mean_temp + mean_temp_sqr + Weekday +lagged_demand_t_1 + lagged_demand_t_2, data = data_new_ts)
+  mean_temp_workday_forecast <- select(data_test_score,mean_temp,mean_temp_sqr,Weekday,lagged_demand_t_1,lagged_demand_t_2)
+  fcast <- forecast(demand_m3,newdata = mean_temp_workday_forecast)
+  forecast_mean <- fcast[["mean"]]
+  forecast_std <- summary(demand_m4)[["sigma"]]
+  actual_observation = data_test_score$log_demand
+  log_score = ln(1/sqrt(2*pi))-ln(forecast_std)-(1/2)*((actual_observation-forecast_mean)/forecast_std)**2
+  point_score = abs(actual_observation-forecast_mean)**2
+  score_model_c <- c(score_model_c,log_score)
+}
+final_score_model_c <- mean(score_model_c)
+```
+
+## Model 5:
+
+Now we aim to create a function to fit the weather data to the the natural logarithm of the daily electricity demand.
+
+First we are going to use a function of the avg_temp f, where:
+f = b0+b1avg_temp, for avg_temp <= temp0
+f = b2+b3avg_temp, for avg_temp > temp0
+
+So this is basically an optimization problem where we want to minimise the mean square error of this f compared to the electricity demand.
+
+```{r}
+data_optim <- filter(data_new, Date <= as.Date('2020/03/10'))
+data_optim <- select(data_optim,mean_temp,log_demand)
+
+weather_fun.optim <- function(x, data_optim){
+  #assigning parameters
+  w0 <- x[1]
+  b0 <- x[2]
+  b1 <- x[3]
+  b2 <- x[4]
+  b3 <- x[5]
+  #Calculations
+  for (i in 1:(length(data_optim$log_demand))){
+      data_optim <- mutate(data_optim,fit_val = ifelse(mean_temp <= w0,b0+b1*mean_temp,b2+b3*mean_temp))
+  }
+  data_optim = mutate(data_optim,residual= log_demand-fit_val)
+  rmse = sqrt(sum((data_optim$residual)**2)/length(data_optim$log_demand))
+  return (rmse)
+}
+
+optim <- optim(x <- c(15,10,-0.02,10,0.01),fn = weather_fun.optim, data_optim = data_optim,method="L-BFGS-B")[1:2]
+```
+
+Hence, we ran the optimization and we got the following parameters:
+
+w0 (first knot) = 15.006
+b0 = 10.474372905
+b1 = -0.027153461
+b2 = 10.061313445
+b3 =  0.000632203
+
+Then we make a graph to see if this is actually close to the data:
+
+```{r}
+w0 <- optim$par[1]
+b0 <- optim$par[2]
+b1 <- optim$par[3]
+b2 <- optim$par[4]
+b3 <- optim$par[5]
+#Calculations
+for (i in 1:(length(data_optim$log_demand))){
+    data_new <- mutate(data_new,fit_weather = ifelse(mean_temp <= w0,b0+b1*mean_temp,b2+b3*mean_temp))
+}
+data_new = mutate(data_new,residual= log_demand-fit_weather)
+
+#Lets plot the data
+ggplot(data = data_new) +
+geom_point(mapping = aes(x = mean_temp, y =log_demand))+geom_line(mapping = aes(x = mean_temp, y =fit_weather),color = 'blue')+theme_bw()+labs(x = "Mean day Temperature", y = "Power demand in MW",title = "Power demand vs Temperature")
+ggsave("figure3.png", dpi=500, dev='png', height=4, width=5, units="in")
+```
+
+Then we can try to use this fit_weather value, which incorporates the more "sophisticated" weather function with one knot into our model to see if we get a better log_score.
+
+```{r}
+data_train_score <- filter(data_new, Date < as.Date('2020/01/01'), Date >= as.Date('2017/01/01')+2)
+data_test_score <- filter(data_new, Date == as.Date('2020/01/01'))
+n1<-dim(data_new)[1]-1
+n2 <- dim(data_train_score)[1]
+num_dates <- as.numeric(as.Date('2020/03/15')-as.Date('2020/01/01'))
+i=0
+score_model_d <- c()
+for (i in 1:(num_dates)){
+  data_train_score <- filter(data_new, Date < as.Date('2020/01/01')+i, Date >= as.Date('2017/01/01')+i+1)
+  data_test_score <- filter(data_new, Date == as.Date('2020/01/01')+i)
+  data_new_ts = ts(data_train_score)
+  demand_m5<- tslm(log_demand ~ fit_weather + Weekday +lagged_demand_t_1 + lagged_demand_t_2, data = data_new_ts)
+  fit_weather_workday_forecast <- select(data_test_score,fit_weather,Weekday,lagged_demand_t_1,lagged_demand_t_2)
+  fcast <- forecast(demand_m5,newdata = fit_weather_workday_forecast)
+  forecast_mean <- fcast[["mean"]]
+  forecast_std <- summary(demand_m4)[["sigma"]]
+  actual_observation = data_test_score$log_demand
+  log_score = ln(1/sqrt(2*pi))-ln(forecast_std)-(1/2)*((actual_observation-forecast_mean)/forecast_std)**2
+  point_score = abs(actual_observation-forecast_mean)**2
+  score_model_d <- c(score_model_d,log_score)
+}
+final_score_model_d <- mean(score_model_d)
+```
+
+## Model 6:
+
+We can now try to create a dynamic regression model that included both the effects of the time series of demand and external factors like temperature or weekdays.
+
+Let's try to build the model with the quadratic form of the weather, weekday and auto.arima (Model 5)
+
+Let's build the model and score it:
+
+```{r}
+data_train_score <- filter(data_new, Date < as.Date('2020/01/01'), Date >= as.Date('2017/01/01')+2)
+data_test_score <- filter(data_new, Date == as.Date('2020/01/01'))
+n1<-dim(data_new)[1]-1
+n2 <- dim(data_train_score)[1]
+num_dates <- as.numeric(as.Date('2020/03/17')-as.Date('2020/01/01'))
+i=0
+score_model_e <- c()
+for (i in 1:(num_dates)){
+  data_train_score <- filter(data_new, Date < as.Date('2020/01/01')+i, Date >= as.Date('2017/01/01')+i+1)
+  data_test_score <- filter(data_new, Date == as.Date('2020/01/01')+i)
+  data_new_ts = (data_train_score)
+  xreg <- cbind(mean_temp = data_new_ts$mean_temp,
+              mean_temp_sqr = data_new_ts$mean_temp_sqr,
+              Weekday = data_new_ts$Weekday)
+  demand_m6 <- Arima(data_new_ts$log_demand, xreg=xreg,order=c(2,1,2))
+  mean_temp_workday_forecast <- as.matrix(select(data_test_score,mean_temp,mean_temp_sqr,Weekday))
+  fcast <- forecast(demand_m6,xreg = (mean_temp_workday_forecast))
+  forecast_mean <- fcast[["mean"]]
+  forecast_std <- sd(fcast[["residuals"]])
+  actual_observation = data_test_score$log_demand
+  log_score = ln(1/sqrt(2*pi))-ln(forecast_std)-(1/2)*((actual_observation-forecast_mean)/forecast_std)**2
+  point_score = abs(actual_observation-forecast_mean)**2
+  score_model_e <- c(score_model_e,log_score)
+}
+final_score_model_e <- mean(score_model_e)
+```
+
+## Model 7:
+
+Finally we can incorporate the weather function with one knot to the arima model to see if we get a higher log score than the quadratic form we had initially.
+
+```{r}
+data_train_score <- filter(data_new, Date < as.Date('2020/01/01'), Date >= as.Date('2017/01/01')+2)
+data_test_score <- filter(data_new, Date == as.Date('2020/01/01'))
+n1<-dim(data_new)[1]-1
+n2 <- dim(data_train_score)[1]
+num_dates <- as.numeric(as.Date('2020/03/17')-as.Date('2020/01/01'))
+i=0
+score_model_f <- c()
+for (i in 1:(num_dates)){
+  data_train_score <- filter(data_new, Date < as.Date('2020/01/01')+i, Date >= as.Date('2017/01/01')+i+1)
+  data_test_score <- filter(data_new, Date == as.Date('2020/01/01')+i)
+  data_new_ts = (data_train_score)
+  xreg <- cbind(fit_weather = data_new_ts$fit_weather,
+              Weekday = data_new_ts$Weekday)
+  demand_m7 <- Arima(data_new_ts$log_demand, xreg=xreg,order=c(1,1,2))
+  mean_temp_workday_forecast <- as.matrix(select(data_test_score,fit_weather,Weekday))
+  fcast <- forecast(demand_m7,xreg = (mean_temp_workday_forecast))
+  forecast_mean <- fcast[["mean"]]
+  forecast_std <- sd(fcast[["residuals"]])
+  actual_observation = data_test_score$log_demand
+  log_score = ln(1/sqrt(2*pi))-ln(forecast_std)-(1/2)*((actual_observation-forecast_mean)/forecast_std)**2
+  point_score = abs(actual_observation-forecast_mean)**2
+  score_model_f <- c(score_model_f,log_score)
+}
+final_score_model_f <- mean(score_model_f)
+```
+
+Let's make the first forecast for submission for '2020/03/19' with demand_m7 which gets the highest log_score.
+
+```{r}
+data_test <- filter(data_new, Date == as.Date('2020/03/17'))
+mean_temp_workday_forecast <- as.matrix(select(data_test,fit_weather,Weekday))
+
+fcast_1 <- forecast(demand_m7,xreg = (mean_temp_workday_forecast))
+forecast_mean_1 <- fcast_1[["mean"]]
+
+data_new$log_demand[n-1]<- forecast_mean_1
+data_new$lagged_demand_t_1[n]<- forecast_mean_1
+data_test <- filter(data_new, Date == as.Date('2020/03/19'))
+mean_temp_workday_forecast <- as.matrix(select(data_test,fit_weather,Weekday))
+fcast_2 <- forecast(demand_m7,xreg = (mean_temp_workday_forecast))
+forecast_mean_2 <- fcast_2[["mean"]][1]
+forecast_std <- sd(fcast_2[["residuals"]])
+```
