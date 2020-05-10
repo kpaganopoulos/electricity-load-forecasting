@@ -23,5 +23,4 @@ Second it contains the total electricity load for England and Wales which is pub
 Third it contains day ahead forecasts.  These are in the form of minimum, mean, and maximum figures for three cities: London, Bristol and Leeds. These are given for the last couple of weeks so that you can check how they compare with HadCET data.
 The version currently published has a final line of data entered on Thursday 27 February. This has the HadCET weather data up to Wednesday 26 February, the National Grid load data up to Wednesday 26 February and the weather forecasts for the three cities for Friday 28 February.
 
-A new version of the spreadsheet will be published on the day that a forecast is due (so the first of these updates will be on Monday 2 March)
-
+A new version of the spreadsheet will be published on the day that a forecast is due (so the first of these updates will be on Monday 2 March).
